@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 slint = {version = "1.5.0", features = ["backend-android-activity-05"]}
 anyhow = "1"
+nokhwa = {version = "0.10.4", features = ["input-native", "output-threaded"] }
 
 [lib]
 crate-type = ["cdylib"]
