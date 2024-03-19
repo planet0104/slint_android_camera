@@ -1,6 +1,7 @@
-
 #[cfg(target_os = "android")]
 mod app;
+
+mod camera;
 
 #[cfg(target_os = "android")]
 #[no_mangle]
