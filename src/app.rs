@@ -1,40 +1,69 @@
-use std::time::Instant;
+use std::{sync::mpsc::channel, time::{Duration, Instant}};
 
 use anyhow::{anyhow, Result};
+use slint::{Timer, TimerMode};
 
-pub fn run() -> Result<()> {
+use crate::camera::Camera;
+
+pub fn run(
+    #[cfg(target_os = "android")]
+    android_app: slint::android::AndroidApp,
+) -> Result<()> {
     slint::slint! {
+        import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
         export component MainWindow inherits Window {
             in-out property <image> camera-texture <=> camera-texture.source;
+            callback open-camera(bool);
 
             VerticalLayout {
-                Text { text: "Hello World"; }
-                camera-texture := Image {
-                    source: @image-url("assets/rust.png");
-                    width: 100px;
+                VerticalBox { Text { text: "相机"; } }
+                HorizontalBox {
+                    alignment: center;
+                    camera-texture := Image {
+                        source: @image-url("assets/rust.png");
+                    }
+                }
+                HorizontalBox {
+                    Button {
+                        text: "打开相机";
+                        clicked => {
+                            open-camera(true);
+                        }
+                    }
+                    Button {
+                        text: "关闭相机";
+                        clicked => {
+                            open-camera(false);
+                        }
+                    }
                 }
             }
         }
     }
 
     let app = MainWindow::new()?;
+    
+    let (image_sender, image_receiver) = channel();
 
-    app.window()
-        .set_rendering_notifier(move |state, graphics_api| {
-            match state {
-                slint::RenderingState::RenderingSetup => {}
-                slint::RenderingState::BeforeRendering => {
-                    // if let (Some(underlay), Some(app)) = (underlay.as_mut(), app_weak.upgrade()) {
-                    //     app.set_camera_texture(slint::Image::from(texture));
-                    //     app.window().request_redraw();
-                    // }
-                }
-                slint::RenderingState::AfterRendering => {}
-                slint::RenderingState::RenderingTeardown => {}
-                _ => {}
-            }
-        })
-        .map_err(|err| anyhow!("{:?}", err))?;
+    let mut camera = Camera::new(#[cfg(target_os = "android")]android_app, image_sender)?;
+
+    let app_clone = app.as_weak();
+    let timer = Timer::default();
+    timer.start(TimerMode::Repeated, std::time::Duration::from_millis(10), move || {
+        if let (Ok(img), Some(app)) = (image_receiver.try_recv(), app_clone.upgrade()){
+            app.set_camera_texture(img);
+        }
+    });
+
+    app.on_open_camera(move |open|{
+        if open{
+            let res = camera.start_preview("0", 1280, 960);
+            println!("相机启动:{:?}", res);
+        }else{
+            let res = camera.stop_preview();
+            println!("相机结束:{:?}", res);
+        }
+    });
 
     app.run()?;
     Ok(())

@@ -1,7 +1,10 @@
 use anyhow::Result;
 
+mod camera;
 mod app;
 
 fn main() -> Result<()> {
-    app::run()
+    #[cfg(not(target_os = "android"))]
+    app::run()?;
+    Ok(())
 }

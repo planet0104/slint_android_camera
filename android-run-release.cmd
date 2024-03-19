@@ -1,0 +1,1 @@
+cargo apk run --release --target aarch64-linux-android --lib

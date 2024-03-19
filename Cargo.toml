@@ -18,9 +18,23 @@ log = "0.4.14"
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.13.1"
 jni = "0.21.1"
-# ndk-sys = "0.5.0+25.2.9519653"
-ndk-sys = "0.4.1+23.1.7779620"
-# ndk = "0.8.0"
+ndk-sys = "0.5.0+25.2.9519653"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 env_logger = "0.9"
+
+[package.metadata.android]
+package = "com.planet.slint_camera"
+
+apk_name = "Slint Camera"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.CAMERA"
+
+[package.metadata.android.signing.release]
+path = "./test.jks"
+keystore_password = "123456"
+
+[package.metadata.android.signing.debug]
+path = "./test.jks"
+keystore_password = "123456"

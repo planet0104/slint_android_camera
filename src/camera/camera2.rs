@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use slint::{Image, SharedPixelBuffer};
 use core::slice;
 use image::{
     imageops::{rotate180, rotate270, rotate90},
@@ -44,8 +45,6 @@ use wgpu::{
     BindGroup, Buffer, ComputePipeline, Device, Limits, Queue, ShaderModel, Texture, TextureView,
 };
 
-// use crate::utils::{self, ffi_helper, permission::get_cache_dir};
-
 #[link(name = "camera2ndk")]
 extern "C" {}
 
@@ -66,8 +65,8 @@ pub struct AndroidCamera {
     image_listener: AImageReader_ImageListener,
     capture_session_state_callbacks: ACameraCaptureSession_stateCallbacks,
     device_state_callbacks: ACameraDevice_StateCallbacks,
-    preview_width: i32,
-    preview_height: i32,
+    preview_width: u32,
+    preview_height: u32,
     timer: Instant,
     frame_count: i32,
     decoder_gpu: Option<YuvGpuDecoder>,
@@ -110,6 +109,11 @@ impl AndroidCamera {
     }
 
     pub fn open(&mut self, camera_id: &str) -> Result<()> {
+        let permission = "android.permission.CAMERA";
+        if !check_self_permission(&self.app, permission)? {
+            request_camera_permission(&self.app)?;
+            return Err(anyhow!("没有相机权限"));
+        }
         unsafe {
             let camera_manager = ACameraManager_create();
             let mut camera_id_list_raw = null_mut();
@@ -200,7 +204,7 @@ impl AndroidCamera {
             info!("image_formats: {:?}", self.image_formats);
 
             unsafe extern "C" fn on_disconnected(_data: *mut c_void, device: *mut ACameraDevice) {
-                // info!("Camera(id: {:?}) is disconnected.", ffi_helper::get_cstr(ACameraDevice_getId(device)));
+                info!("Camera(id: {:?}) is disconnected.", get_cstr(ACameraDevice_getId(device)));
             }
 
             unsafe extern "C" fn on_error(
@@ -208,7 +212,7 @@ impl AndroidCamera {
                 device: *mut ACameraDevice,
                 error: c_int,
             ) {
-                // error!("Error(code: {}) on Camera(id: {:?}).", error, ffi_helper::get_cstr(ACameraDevice_getId(device)));
+                error!("Error(code: {}) on Camera(id: {:?}).", error, get_cstr(ACameraDevice_getId(device)));
             }
 
             self.device_state_callbacks.onDisconnected = Some(on_disconnected);
@@ -344,10 +348,10 @@ impl AndroidCamera {
         info!("Close Camera");
     }
 
-    pub fn start_preview(&mut self, width: i32, height: i32) -> Result<()> {
+    pub fn start_preview(&mut self, width: u32, height: u32) -> Result<()> {
         self.preview_width = width;
         self.preview_height = height;
-        self.decoder_gpu = Some(YuvGpuDecoder::new(width as u32, height as u32)?);
+        self.decoder_gpu = Some(YuvGpuDecoder::new(width, height)?);
         self.rgba_buffer = vec![0; (width * height * 4) as usize];
         self.create_image_reader(width, height, AIMAGE_FORMATS::AIMAGE_FORMAT_YUV_420_888)?;
         unsafe {
@@ -568,12 +572,9 @@ impl AndroidCamera {
                 None => (width, height),
                 Some(o) => (o.width as i32, o.height as i32),
             };
-            // if self.color_image.is_none(){
-            //     self.color_image = Some(ColorImage::new([output_width as usize, output_height as usize], Color32::default()));
-            // }
-            // self.color_image.as_mut().unwrap().as_raw_mut().copy_from_slice(&self.rgba_buffer);
-            // self.image_sender.send(ImageData::Color(self.color_image.clone().unwrap()))?;
-            // info!("转码+旋转+Send耗时:{}ms", t.elapsed().as_millis());
+            let buf = SharedPixelBuffer::clone_from_slice(&self.rgba_buffer, output_width as u32, output_height as u32);
+            self.image_sender.send(Image::from_rgba8(buf)).map_err(|err| anyhow!("{:?}", err))?;
+            info!("转码+旋转+Send耗时:{}ms", t.elapsed().as_millis());
 
             // 预览回调帧率正常是 30FPS
             self.frame_count += 1;
@@ -590,14 +591,14 @@ impl AndroidCamera {
 
     fn create_image_reader(
         &mut self,
-        width: i32,
-        height: i32,
+        width: u32,
+        height: u32,
         image_format: AIMAGE_FORMATS,
     ) -> Result<()> {
         unsafe {
             let res: ndk_sys::media_status_t = AImageReader_new(
-                width,
-                height,
+                width as i32,
+                height as i32,
                 image_format.0 as i32,
                 2,
                 &mut self.image_reader,
@@ -613,8 +614,8 @@ impl AndroidCamera {
             ) {
                 //还原Camera指针
                 let camera = &mut *(context as *mut _ as *mut AndroidCamera);
-                let res = camera.on_image_available();
-                println!("on_image_available:{:?}", res);
+                let _ = camera.on_image_available();
+                // println!("on_image_available:{:?}", res);
             }
 
             let camera_ptr: *mut AndroidCamera = self as *mut _;
@@ -1076,8 +1077,6 @@ impl YuvGpuDecoder {
                 cpass.set_bind_group(0, self.rotate_bind_group.as_ref().unwrap(), &[]);
                 let workgroup_count_x = (self.texture_size.width + 16 - 1) / 16;
                 let workgroup_count_y = (self.texture_size.height + 16 - 1) / 16;
-                println!("workgroup_count_x={workgroup_count_x}");
-                println!("workgroup_count_y={workgroup_count_y}");
                 cpass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
             }
 
