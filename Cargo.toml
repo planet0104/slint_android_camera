@@ -15,6 +15,9 @@ bytemuck = "1.14.3"
 pollster = "0.3.0"
 log = "0.4.14"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+escapi = { git="https://github.com/planet0104/escapi" }
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.13.1"
 jni = "0.21.1"

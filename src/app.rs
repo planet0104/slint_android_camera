@@ -57,7 +57,7 @@ pub fn run(
 
     app.on_open_camera(move |open|{
         if open{
-            let res = camera.start_preview("0", 1280, 960);
+            let res = camera.start_preview(2, 1280, 720);
             println!("相机启动:{:?}", res);
         }else{
             let res = camera.stop_preview();

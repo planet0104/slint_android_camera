@@ -8,10 +8,14 @@ use slint::Image;
 #[cfg(target_os = "android")]
 mod camera2;
 
+#[cfg(target_os = "windows")]
+mod escam;
+
 pub struct Camera{
     #[cfg(target_os = "android")]
     camera: AndroidCamera,
-
+    #[cfg(target_os = "windows")]
+    camera: escam::ESCamera,
 }
 
 impl Camera{
@@ -24,16 +28,20 @@ impl Camera{
         let camera = AndroidCamera::new(app, image_sender);
         Ok(Camera{
             #[cfg(target_os = "android")]
-            camera
+            camera,
+            #[cfg(target_os = "windows")]
+            camera: escam::ESCamera::new(image_sender)
         })
     }
 
-    pub fn start_preview(&mut self, camera_id: &str, width: u32, height: u32) -> Result<()>{
+    pub fn start_preview(&mut self, index: usize, width: u32, height: u32) -> Result<()>{
         #[cfg(target_os = "android")]
         {
             self.camera.open(camera_id)?;
             self.camera.start_preview(width, height)?;
         }
+        #[cfg(target_os = "windows")]
+        self.camera.start_preview(index, width, height)?;
         Ok(())
     }
 
@@ -42,6 +50,8 @@ impl Camera{
         {
             self.camera.close();
         }
+        #[cfg(target_os = "windows")]
+        self.camera.stop_preview();
         Ok(())
     }
     
