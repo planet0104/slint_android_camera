@@ -1,8 +1,16 @@
 {
-    // "rust-analyzer.cargo.target": "aarch64-linux-android",
+    "rust-analyzer.cargo.target": "aarch64-linux-android",
     "rust-analyzer.showUnlinkedFileNotification": false,
     "cSpell.words": [
+        "acamera",
         "AIMAGE",
+        "argb",
+        "bgra",
+        "jint",
+        "jobject",
+        "kamera",
+        "Landroid",
+        "Ljava",
         "workgroups"
     ],
 }

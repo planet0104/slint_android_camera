@@ -15,9 +15,6 @@ bytemuck = "1.14.3"
 pollster = "0.3.0"
 log = "0.4.14"
 
-[target.'cfg(target_os = "windows")'.dependencies]
-escapi = { git="https://github.com/planet0104/escapi" }
-
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.13.1"
 jni = "0.21.1"
@@ -25,6 +22,7 @@ ndk-sys = "0.5.0+25.2.9519653"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 env_logger = "0.9"
+kamera = { git = "https://github.com/planet0104/kamera" }
 
 [package.metadata.android]
 package = "com.planet.slint_camera"

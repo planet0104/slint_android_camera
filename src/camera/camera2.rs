@@ -1,10 +1,6 @@
 use anyhow::{anyhow, Result};
-use slint::{Image, SharedPixelBuffer};
+use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use core::slice;
-use image::{
-    imageops::{rotate180, rotate270, rotate90},
-    GrayImage, ImageBuffer, Rgb, RgbaImage,
-};
 use jni::{
     objects::{JObject, JString, JValueGen},
     sys::{JNIInvokeInterface_, _jobject, jint},
@@ -34,7 +30,6 @@ use pollster::FutureExt;
 use std::{
     borrow::Cow,
     ffi::{c_int, c_void, CStr},
-    io::Write,
     mem::zeroed,
     ptr::null_mut,
     sync::mpsc::Sender,
@@ -42,7 +37,7 @@ use std::{
 };
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
-    BindGroup, Buffer, ComputePipeline, Device, Limits, Queue, ShaderModel, Texture, TextureView,
+    BindGroup, ComputePipeline, Device, Limits, Queue, Texture, TextureView,
 };
 
 #[link(name = "camera2ndk")]
@@ -71,14 +66,14 @@ pub struct AndroidCamera {
     frame_count: i32,
     decoder_gpu: Option<YuvGpuDecoder>,
     rgba_buffer: Vec<u8>,
-    image_sender: Sender<slint::Image>,
+    image_sender: Sender<SharedPixelBuffer<Rgba8Pixel>>,
     lens_facing: u8,
     sensor_orientation: i32,
-    color_image: Option<slint::Image>,
+    color_image: Option<SharedPixelBuffer<Rgba8Pixel>>,
 }
 
 impl AndroidCamera {
-    pub fn new(app: slint::android::AndroidApp, image_sender: Sender<slint::Image>) -> Self {
+    pub fn new(app: slint::android::AndroidApp, image_sender: Sender<SharedPixelBuffer<Rgba8Pixel>>) -> Self {
         Self {
             app,
             camera_device: null_mut(),
@@ -557,10 +552,24 @@ impl AndroidCamera {
             let t = Instant::now();
             // info!("start gpu decode...");
             //GPU转换耗时 6~8毫秒左右，有时会是10ms左右
+            let display_rotation = get_display_rotation(&self.app)?;
+            let rotation_degree = if display_rotation == 0{
+                self.sensor_orientation
+            }else if display_rotation == 90{
+                //正向横屏
+                0
+            }else if display_rotation == 180{
+                //反向竖屏(不常见)
+                0
+            }else{
+                //反向横屏
+                self.sensor_orientation + 90
+            };
+
             self.decoder_gpu.as_mut().unwrap().decode(
                 &yuv_data,
                 &mut self.rgba_buffer,
-                self.sensor_orientation,
+                rotation_degree,
             )?;
             let (output_width, output_height) = match self
                 .decoder_gpu
@@ -573,8 +582,8 @@ impl AndroidCamera {
                 Some(o) => (o.width as i32, o.height as i32),
             };
             let buf = SharedPixelBuffer::clone_from_slice(&self.rgba_buffer, output_width as u32, output_height as u32);
-            self.image_sender.send(Image::from_rgba8(buf)).map_err(|err| anyhow!("{:?}", err))?;
-            info!("转码+旋转+Send耗时:{}ms", t.elapsed().as_millis());
+            self.image_sender.send(buf).map_err(|err| anyhow!("{:?}", err))?;
+            // info!("转码+旋转+Send耗时:{}ms sensor_orientation={} display_rotation={display_rotation}", t.elapsed().as_millis(), self.sensor_orientation);
 
             // 预览回调帧率正常是 30FPS
             self.frame_count += 1;
@@ -614,7 +623,9 @@ impl AndroidCamera {
             ) {
                 //还原Camera指针
                 let camera = &mut *(context as *mut _ as *mut AndroidCamera);
-                let _ = camera.on_image_available();
+                if let Err(err) = camera.on_image_available(){
+                    error!("图像转换失败： {:?}", err)
+                }
                 // println!("on_image_available:{:?}", res);
             }
 
@@ -709,6 +720,7 @@ struct YuvGpuDecoder {
     rotate_bind_group: Option<BindGroup>,
     rotate_output_texture: Option<Texture>,
     rotate_output_size: Option<wgpu::Extent3d>,
+    last_rotate_degree: i32,
 }
 
 impl YuvGpuDecoder {
@@ -957,6 +969,7 @@ impl YuvGpuDecoder {
             rotate_bind_group: None,
             rotate_output_texture: None,
             rotate_output_size: None,
+            last_rotate_degree: 0,
         })
     }
 
@@ -1007,6 +1020,7 @@ impl YuvGpuDecoder {
 
         //是否需要旋转
         let need_rotate = rotate_degree >= 90 && rotate_degree <= 270;
+        let need_init_rotate = self.last_rotate_degree != rotate_degree;
 
         let mut encoder = self
             .device
@@ -1060,9 +1074,9 @@ impl YuvGpuDecoder {
         // info!("转换完成 耗时:{}ms", t.elapsed().as_millis());
 
         //开始旋转
-        if need_rotate {
+        if need_rotate || need_init_rotate {
             // let t = Instant::now();
-            if self.rotate_bind_group.is_none() {
+            if self.rotate_bind_group.is_none() || need_init_rotate {
                 self.rotate_init(rotate_degree);
             }
 
@@ -1150,6 +1164,7 @@ impl YuvGpuDecoder {
     }
 
     fn rotate_init(&mut self, rotate_degree: i32) {
+        self.last_rotate_degree = rotate_degree;
         //创建旋转缓冲区
         let (rotate_output_width, rotate_output_height) = if (rotate_degree / 90) % 2 == 0 {
             (self.texture_size.width, self.texture_size.height)
@@ -1273,6 +1288,61 @@ pub fn get_cache_dir(app: &slint::android::AndroidApp) -> Result<String> {
         } else {
             Err(anyhow!("object is not a file"))
         }
+    }
+}
+
+pub fn get_screen_orientation(app: &slint::android::AndroidApp) -> Result<i32>{
+    unsafe{
+        let vm = JavaVM::from_raw(app.vm_as_ptr() as *mut *const JNIInvokeInterface_)?;
+        let mut env = vm.attach_current_thread()?;
+        let activity: JObject<'_> = JObject::from_raw(app.activity_as_ptr() as *mut _jobject);
+
+        //android.content.res.Resources
+        let resources = env.call_method(activity, "getResources", "()Landroid/content/res/Resources;", &[])?.l()?;
+        //android.content.res.Configuration
+        let configuration = env.call_method(resources, "getConfiguration", "()Landroid/content/res/Configuration;", &[])?.l()?;
+        let orientation = env.get_field(configuration, "orientation", "I")?.i()?;
+        Ok(orientation)
+    }
+}
+
+pub fn get_display_rotation(app: &slint::android::AndroidApp) -> Result<i32>{
+    unsafe{
+        let vm = JavaVM::from_raw(app.vm_as_ptr() as *mut *const JNIInvokeInterface_)?;
+        let mut env = vm.attach_current_thread()?;
+        let activity: JObject<'_> = JObject::from_raw(app.activity_as_ptr() as *mut _jobject);
+
+        let service_name = env.new_string("display")?;
+        let service = env.call_method(activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValueGen::Object(&service_name)])?.l()?;
+        let display = env.call_method(service, "getDisplay", "(I)Landroid/view/Display;", &[JValueGen::Int(0)])?.l()?;
+        let rotation = env.call_method(display, "getRotation", "()I", &[])?.i()?;
+        
+        // 正向竖屏
+        let rotation_0 = env.get_static_field("android/view/Surface", "ROTATION_0", "I")?.i()?;
+        // 正向横屏
+        let rotation_90 = env.get_static_field("android/view/Surface", "ROTATION_90", "I")?.i()?;
+        // 反向竖屏
+        let rotation_180 = env.get_static_field("android/view/Surface", "ROTATION_180", "I")?.i()?;
+        //反向横屏
+        let rotation_270 = env.get_static_field("android/view/Surface", "ROTATION_270", "I")?.i()?;
+
+        let display_rotation: i32;
+
+        if rotation == rotation_0 {
+            display_rotation = 0; // 正向竖屏
+        } else if rotation == rotation_90 {
+            display_rotation = 90; // 正向横屏
+        } else if rotation == rotation_180 {
+            display_rotation = 180; // 反向竖屏
+        } else if rotation == rotation_270 {
+            display_rotation = 270; // 反向横屏
+        } else {
+            display_rotation = 0; // 默认值或错误处理
+        }
+
+        // println!("当前rotation={rotation} rotation_0={rotation_0},rotation_90={rotation_90},rotation_180={rotation_180},rotation_270={rotation_270} 角度:{display_rotation}");
+
+        Ok(display_rotation)
     }
 }
 
